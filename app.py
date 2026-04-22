@@ -17,8 +17,6 @@ def init_state():
         "tracking": False,
         "previous_count": None,
         "previous_period": None,
-        "warning_message": "STATUS: OK",
-        "warning_type": "ok",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -31,6 +29,18 @@ def fetch_json(url):
     return r.json()
 
 
+def extract_abbrev(value, fallback="UNK"):
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict):
+        if value.get("default"):
+            return value["default"]
+        for v in value.values():
+            if isinstance(v, str) and v:
+                return v
+    return fallback
+
+
 def load_live_games():
     data = fetch_json(SCOREBOARD_URL)
     games = []
@@ -38,8 +48,8 @@ def load_live_games():
     for day in data.get("gamesByDate", []):
         for game in day.get("games", []):
             if game.get("gameState") in {"LIVE", "CRIT"}:
-                away = game.get("awayTeam", {}).get("abbrev", "AWAY")
-                home = game.get("homeTeam", {}).get("abbrev", "HOME")
+                away = extract_abbrev(game.get("awayTeam", {}).get("abbrev"), "AWAY")
+                home = extract_abbrev(game.get("homeTeam", {}).get("abbrev"), "HOME")
                 gid = game.get("id")
                 label = f"{away} @ {home} ({gid})"
                 games.append({"label": label, "id": gid})
@@ -80,21 +90,8 @@ def build_team_lookup(game_data):
     home_id = home.get("id")
     away_id = away.get("id")
 
-    home_abbrev = (
-        home.get("abbrev")
-        or home.get("abbrevName")
-        or home.get("triCode")
-        or home.get("placeName", {}).get("default")
-        or "HOME"
-    )
-
-    away_abbrev = (
-        away.get("abbrev")
-        or away.get("abbrevName")
-        or away.get("triCode")
-        or away.get("placeName", {}).get("default")
-        or "AWAY"
-    )
+    home_abbrev = extract_abbrev(home.get("abbrev"), "HOME")
+    away_abbrev = extract_abbrev(away.get("abbrev"), "AWAY")
 
     if home_id is not None:
         lookup[home_id] = home_abbrev
@@ -104,24 +101,87 @@ def build_team_lookup(game_data):
     return lookup
 
 
-def safe_team(play, team_lookup):
-    owner_team_id = play.get("eventOwnerTeamId")
-    if owner_team_id in team_lookup:
-        return team_lookup[owner_team_id]
+def build_player_team_lookup(game_data, team_lookup):
+    player_team_lookup = {}
 
-    team_abbrev = play.get("teamAbbrev")
-    if isinstance(team_abbrev, dict) and team_abbrev.get("default"):
-        return team_abbrev["default"]
-    if isinstance(team_abbrev, str) and team_abbrev:
-        return team_abbrev
+    # Common structure: rosterSpots = [{playerId, teamId, ...}, ...]
+    for spot in game_data.get("rosterSpots", []) or []:
+        player_id = spot.get("playerId") or spot.get("id")
+        team_id = spot.get("teamId")
+        team_abbrev = extract_abbrev(spot.get("teamAbbrev"), None)
 
-    team_obj = play.get("team", {})
-    if isinstance(team_obj, dict) and team_obj.get("abbrev"):
-        return team_obj["abbrev"]
+        if player_id is None:
+            continue
 
-    details = play.get("details", {})
-    if isinstance(details, dict) and details.get("eventOwnerTeamAbbrev"):
-        return details["eventOwnerTeamAbbrev"]
+        if team_abbrev:
+            player_team_lookup[player_id] = team_abbrev
+        elif team_id in team_lookup:
+            player_team_lookup[player_id] = team_lookup[team_id]
+
+    # Fallback structure: playerByGameStats may be dict keyed by player id
+    player_stats = game_data.get("playerByGameStats", {})
+    if isinstance(player_stats, dict):
+        for key, val in player_stats.items():
+            if not isinstance(val, dict):
+                continue
+
+            player_id = val.get("playerId")
+            if player_id is None:
+                try:
+                    player_id = int(key)
+                except Exception:
+                    player_id = None
+
+            team_id = val.get("teamId")
+            team_abbrev = extract_abbrev(val.get("teamAbbrev"), None)
+
+            if player_id is None:
+                continue
+
+            if team_abbrev:
+                player_team_lookup[player_id] = team_abbrev
+            elif team_id in team_lookup:
+                player_team_lookup[player_id] = team_lookup[team_id]
+
+    return player_team_lookup
+
+
+def resolve_team(play, team_lookup, player_team_lookup):
+    details = play.get("details", {}) or {}
+
+    # Best-case: explicit team ids
+    candidate_team_ids = [
+        play.get("eventOwnerTeamId"),
+        play.get("teamId"),
+        details.get("eventOwnerTeamId"),
+        details.get("teamId"),
+    ]
+    for team_id in candidate_team_ids:
+        if team_id in team_lookup:
+            return team_lookup[team_id]
+
+    # Explicit abbrev fields
+    candidate_abbrevs = [
+        play.get("teamAbbrev"),
+        play.get("team", {}).get("abbrev") if isinstance(play.get("team"), dict) else None,
+        details.get("eventOwnerTeamAbbrev"),
+        details.get("teamAbbrev"),
+        details.get("winningTeamAbbrev"),
+    ]
+    for abbrev in candidate_abbrevs:
+        parsed = extract_abbrev(abbrev, None)
+        if parsed:
+            return parsed
+
+    # Faceoff-specific fallback: winning player -> team
+    candidate_player_ids = [
+        details.get("winningPlayerId"),
+        details.get("playerId"),
+        details.get("winningPlayer", {}).get("playerId") if isinstance(details.get("winningPlayer"), dict) else None,
+    ]
+    for player_id in candidate_player_ids:
+        if player_id in player_team_lookup:
+            return player_team_lookup[player_id]
 
     return "UNK"
 
@@ -129,23 +189,26 @@ def safe_team(play, team_lookup):
 def parse_faceoffs(game_data):
     plays = game_data.get("plays", []) or []
     team_lookup = build_team_lookup(game_data)
+    player_team_lookup = build_player_team_lookup(game_data, team_lookup)
 
     faceoffs = []
 
     for play in plays:
-        if str(play.get("typeDescKey", "")).lower() == "faceoff":
-            period = play.get("periodDescriptor", {}).get("number")
-            raw_time = play.get("timeInPeriod", "")
+        if str(play.get("typeDescKey", "")).lower() != "faceoff":
+            continue
 
-            faceoffs.append(
-                {
-                    "event_id": play.get("eventId"),
-                    "period": period,
-                    "raw_time": raw_time,
-                    "time": convert_to_time_remaining(raw_time, period),
-                    "team": safe_team(play, team_lookup),
-                }
-            )
+        period = play.get("periodDescriptor", {}).get("number")
+        raw_time = play.get("timeInPeriod", "")
+
+        faceoffs.append(
+            {
+                "event_id": play.get("eventId"),
+                "period": period,
+                "raw_time": raw_time,
+                "time": convert_to_time_remaining(raw_time, period),
+                "team": resolve_team(play, team_lookup, player_team_lookup),
+            }
+        )
 
     deduped = {}
     for f in faceoffs:
@@ -233,7 +296,6 @@ with col1:
                 st.success(f"{len(games)} game(s) loaded")
             else:
                 st.info("No live games found.")
-
         except Exception as e:
             st.error(str(e))
 
@@ -266,7 +328,6 @@ with col2:
             st.session_state.tracking = True
             st.session_state.previous_count = None
             st.session_state.previous_period = None
-
 
 if st.session_state.tracking:
     st_autorefresh(interval=REFRESH_MS, key="refresh")
@@ -313,11 +374,12 @@ if st.session_state.tracking:
         )
 
         by_period = state["by_period"]
+        ot_total = sum(v for k, v in by_period.items() if isinstance(k, int) and k > 3)
 
         st.markdown(
             f"""
             **Current Period:** P{current_period}  
-            **P1:** {by_period.get(1, 0)} | **P2:** {by_period.get(2, 0)} | **P3:** {by_period.get(3, 0)} | **OT:** {sum(v for k, v in by_period.items() if isinstance(k, int) and k > 3)}  
+            **P1:** {by_period.get(1, 0)} | **P2:** {by_period.get(2, 0)} | **P3:** {by_period.get(3, 0)} | **OT:** {ot_total}  
             **Total (game):** {state["total"]}
             """
         )
