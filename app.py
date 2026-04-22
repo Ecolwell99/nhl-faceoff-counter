@@ -6,10 +6,10 @@ SCOREBOARD_URL = "https://api-web.nhle.com/v1/scoreboard/now"
 PBP_URL = "https://api-web.nhle.com/v1/gamecenter/{game_id}/play-by-play"
 REFRESH_MS = 3000
 
+st.set_page_config(page_title="Faceoff Counter", layout="centered")
 
-st.set_page_config(page_title="NHL Faceoff Counter", layout="centered")
 
-
+# ------------------ STATE ------------------ #
 def init_state():
     defaults = {
         "games": [],
@@ -17,18 +17,20 @@ def init_state():
         "selected_game_id": None,
         "tracking": False,
         "previous_count": None,
+        "previous_period": None,
         "warning_message": "STATUS: OK",
         "warning_type": "ok",
     }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
 
-def fetch_json(url: str) -> dict:
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    return response.json()
+# ------------------ DATA ------------------ #
+def fetch_json(url):
+    r = requests.get(url, timeout=10)
+    r.raise_for_status()
+    return r.json()
 
 
 def load_live_games():
@@ -37,92 +39,91 @@ def load_live_games():
 
     for day in data.get("gamesByDate", []):
         for game in day.get("games", []):
-            state = game.get("gameState")
-            if state in {"LIVE", "CRIT"}:
-                away = game.get("awayTeam", {}).get("abbrev", "AWAY")
-                home = game.get("homeTeam", {}).get("abbrev", "HOME")
-                game_id = game.get("id")
-                label = f"{away} @ {home} ({game_id})"
-                games.append(
-                    {
-                        "label": label,
-                        "id": game_id,
-                        "away": away,
-                        "home": home,
-                    }
-                )
+            if game.get("gameState") in {"LIVE", "CRIT"}:
+                away = game["awayTeam"]["abbrev"]
+                home = game["homeTeam"]["abbrev"]
+                gid = game["id"]
+                label = f"{away} @ {home} ({gid})"
 
+                games.append({
+                    "label": label,
+                    "id": gid
+                })
     return games
 
 
-def parse_faceoffs(plays: list[dict]) -> list[dict]:
+def parse_faceoffs(plays):
     faceoffs = []
 
-    for play in plays or []:
-        play_type = str(play.get("typeDescKey", "")).lower()
-
-        if play_type == "faceoff":
-            winner = (
+    for play in plays:
+        if str(play.get("typeDescKey", "")).lower() == "faceoff":
+            team = (
                 play.get("teamAbbrev", {}).get("default")
                 or play.get("team", {}).get("abbrev")
                 or "UNK"
             )
 
-            faceoffs.append(
-                {
-                    "event_id": play.get("eventId"),
-                    "period": play.get("periodDescriptor", {}).get("number"),
-                    "time_in_period": play.get("timeInPeriod", ""),
-                    "winner": winner,
-                }
-            )
+            faceoffs.append({
+                "event_id": play.get("eventId"),
+                "period": play.get("periodDescriptor", {}).get("number"),
+                "time": play.get("timeInPeriod"),
+                "team": team
+            })
 
-    return faceoffs
+    # dedupe
+    seen = {}
+    for f in faceoffs:
+        seen[f["event_id"]] = f
+
+    return list(seen.values())
 
 
-def get_faceoff_state(game_id: int) -> dict:
+def get_state(game_id):
     data = fetch_json(PBP_URL.format(game_id=game_id))
     plays = data.get("plays", [])
 
-    raw_faceoffs = parse_faceoffs(plays)
+    faceoffs = parse_faceoffs(plays)
 
-    deduped = {}
-    for faceoff in raw_faceoffs:
-        deduped[faceoff["event_id"]] = faceoff
-
-    unique_faceoffs = list(deduped.values())
-
+    # split by period
     by_period = {}
-    for faceoff in unique_faceoffs:
-        period = faceoff["period"]
-        by_period[period] = by_period.get(period, 0) + 1
+    for f in faceoffs:
+        p = f["period"]
+        by_period[p] = by_period.get(p, 0) + 1
 
-    last_faceoff = unique_faceoffs[-1] if unique_faceoffs else None
+    current_period = faceoffs[-1]["period"] if faceoffs else 1
+
+    current_period_faceoffs = [
+        f for f in faceoffs if f["period"] == current_period
+    ]
+
+    last_faceoff = faceoffs[-1] if faceoffs else None
 
     return {
-        "total": len(unique_faceoffs),
+        "all": faceoffs,
         "by_period": by_period,
-        "last_faceoff": last_faceoff,
-        "faceoffs": unique_faceoffs,
+        "current_period": current_period,
+        "current_list": current_period_faceoffs,
+        "current_count": len(current_period_faceoffs),
+        "total": len(faceoffs),
+        "last": last_faceoff
     }
 
 
-def warning_box(message: str, warning_type: str):
-    if warning_type == "alert":
+# ------------------ UI ------------------ #
+def warning_box(msg, alert):
+    if alert:
         st.markdown(
             f"""
             <div style="
-                margin-top: 10px;
-                margin-bottom: 18px;
-                padding: 16px;
-                border-radius: 10px;
-                font-size: 28px;
-                font-weight: 700;
-                background-color: #3a1600;
-                color: #ffd966;
-                border: 2px solid #ff9900;
-            ">
-                {message}
+                padding:16px;
+                font-size:28px;
+                font-weight:700;
+                background:#3a1600;
+                color:#ffd966;
+                border:2px solid #ff9900;
+                border-radius:10px;
+                margin-bottom:16px;">
+                {msg}
             </div>
             """,
             unsafe_allow_html=True,
@@ -131,164 +132,150 @@ def warning_box(message: str, warning_type: str):
         st.markdown(
             f"""
             <div style="
-                margin-top: 10px;
-                margin-bottom: 18px;
-                padding: 16px;
-                border-radius: 10px;
-                font-size: 28px;
-                font-weight: 700;
-                background-color: #132117;
-                color: #66ff99;
-                border: 2px solid #2e6b45;
-            ">
-                {message}
+                padding:16px;
+                font-size:28px;
+                font-weight:700;
+                background:#132117;
+                color:#66ff99;
+                border:2px solid #2e6b45;
+                border-radius:10px;
+                margin-bottom:16px;">
+                {msg}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
 
+# ------------------ APP ------------------ #
 init_state()
 
 st.title("NHL Faceoff Counter")
 
-col1, col2 = st.columns([1, 1])
+col1, col2 = st.columns(2)
 
+# Load games
 with col1:
     if st.button("Load Live Games", use_container_width=True):
         try:
             games = load_live_games()
             st.session_state.games = games
 
-            if not games:
-                st.session_state.selected_game_label = None
-                st.session_state.selected_game_id = None
-                st.session_state.tracking = False
-                st.info("No live games found.")
+            if games:
+                st.session_state.selected_game_label = games[0]["label"]
+                st.session_state.selected_game_id = games[0]["id"]
+                st.success(f"{len(games)} game(s) loaded")
             else:
-                labels = [g["label"] for g in games]
-                if st.session_state.selected_game_label not in labels:
-                    st.session_state.selected_game_label = labels[0]
-                    st.session_state.selected_game_id = games[0]["id"]
-                st.success(f"Loaded {len(games)} live game(s).")
+                st.info("No live games found.")
+
         except Exception as e:
-            st.error(f"Error loading games: {e}")
+            st.error(str(e))
 
-game_labels = [g["label"] for g in st.session_state.games]
+# Select game
+labels = [g["label"] for g in st.session_state.games]
 
-selected_label = st.selectbox(
-    "Live games",
-    options=game_labels,
-    index=game_labels.index(st.session_state.selected_game_label)
-    if st.session_state.selected_game_label in game_labels
-    else None,
-    placeholder="Load live games first",
-    label_visibility="collapsed",
+selected = st.selectbox(
+    "Games",
+    options=labels,
+    index=labels.index(st.session_state.selected_game_label)
+    if st.session_state.selected_game_label in labels else 0
 )
 
-if selected_label:
-    st.session_state.selected_game_label = selected_label
-    for game in st.session_state.games:
-        if game["label"] == selected_label:
-            st.session_state.selected_game_id = game["id"]
-            break
+if selected:
+    for g in st.session_state.games:
+        if g["label"] == selected:
+            st.session_state.selected_game_id = g["id"]
 
+# Track
 with col2:
     if st.button("Track Selected Game", use_container_width=True):
-        if st.session_state.selected_game_id is None:
-            st.warning("Load live games and select one first.")
-        else:
-            st.session_state.tracking = True
-            st.session_state.previous_count = None
-            st.session_state.warning_message = "STATUS: OK"
-            st.session_state.warning_type = "ok"
+        st.session_state.tracking = True
+        st.session_state.previous_count = None
+        st.session_state.previous_period = None
 
+
+# ------------------ LIVE ------------------ #
 if st.session_state.tracking:
-    st_autorefresh(interval=REFRESH_MS, key="faceoff_refresh")
+
+    st_autorefresh(interval=REFRESH_MS, key="refresh")
 
     try:
-        state = get_faceoff_state(st.session_state.selected_game_id)
-        new_count = state["total"]
-        previous_count = st.session_state.previous_count
+        state = get_state(st.session_state.selected_game_id)
 
-        if previous_count is not None:
-            if new_count < previous_count:
-                st.session_state.warning_message = (
-                    f"⚠ COUNT DECREASE: {previous_count} → {new_count}"
-                )
-                st.session_state.warning_type = "alert"
-            elif (new_count - previous_count) > 1:
-                st.session_state.warning_message = (
-                    f"⚠ MULTIPLE FACEOFFS ADDED: +{new_count - previous_count}"
-                )
-                st.session_state.warning_type = "alert"
+        current_count = state["current_count"]
+        current_period = state["current_period"]
+
+        prev_count = st.session_state.previous_count
+        prev_period = st.session_state.previous_period
+
+        # ----- WARNINGS ----- #
+        if prev_period == current_period:
+            if prev_count is not None:
+                if current_count < prev_count:
+                    msg = f"⚠ COUNT DECREASE: {prev_count} → {current_count}"
+                    alert = True
+                elif current_count - prev_count > 1:
+                    msg = f"⚠ MULTIPLE FACEOFFS ADDED: +{current_count - prev_count}"
+                    alert = True
+                else:
+                    msg = "STATUS: OK"
+                    alert = False
             else:
-                st.session_state.warning_message = "STATUS: OK"
-                st.session_state.warning_type = "ok"
+                msg = "STATUS: OK"
+                alert = False
         else:
-            st.session_state.warning_message = "STATUS: OK"
-            st.session_state.warning_type = "ok"
+            # new period → reset, no warning
+            msg = f"Period {current_period} started"
+            alert = False
 
-        st.session_state.previous_count = new_count
+        st.session_state.previous_count = current_count
+        st.session_state.previous_period = current_period
 
-        warning_box(
-            st.session_state.warning_message,
-            st.session_state.warning_type,
-        )
+        warning_box(msg, alert)
 
+        # ----- MAIN COUNTER ----- #
         st.markdown(
             f"""
-            <div style="
-                font-size: 80px;
-                font-weight: 800;
-                margin-top: 8px;
-                margin-bottom: 8px;
-                line-height: 1;
-            ">
-                {new_count}
+            <div style="font-size:80px; font-weight:800;">
+                {current_count}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
+        # ----- SUMMARY ----- #
         by_period = state["by_period"]
-        last_faceoff = state["last_faceoff"]
-
-        ot_count = sum(
-            count for period, count in by_period.items()
-            if isinstance(period, int) and period > 3
-        )
 
         st.markdown(
             f"""
-            **Game ID:** {st.session_state.selected_game_id}  
-            **P1:** {by_period.get(1, 0)} | **P2:** {by_period.get(2, 0)} | **P3:** {by_period.get(3, 0)} | **OT:** {ot_count}
+            **Current Period:** P{current_period}  
+            **P1:** {by_period.get(1,0)} | **P2:** {by_period.get(2,0)} | **P3:** {by_period.get(3,0)}  
+            **Total (game):** {state["total"]}
             """
         )
 
-        if last_faceoff:
+        # ----- LAST FACEOFF ----- #
+        if state["last"]:
+            lf = state["last"]
             st.markdown(
                 f"""
-                **Last faceoff:** P{last_faceoff['period']} {last_faceoff['time_in_period']}  
-                **Winner:** {last_faceoff['winner']}  
-                **Event ID:** {last_faceoff['event_id']}
+                **Last Faceoff:** P{lf['period']} {lf['time']} | Winner: {lf['team']} | Event {lf['event_id']}
                 """
             )
-        else:
-            st.markdown("**Last faceoff:** none")
 
-        st.subheader("Audit List")
+        # ----- AUDIT LIST (CURRENT PERIOD ONLY) ----- #
+        st.subheader(f"Period {current_period} Faceoffs")
 
-        if state["faceoffs"]:
-            audit_lines = [
-                f"{idx}. P{f['period']} {f['time_in_period']} | Winner: {f['winner']} | Event {f['event_id']}"
-                for idx, f in enumerate(state["faceoffs"], start=1)
-            ]
-            st.code("\n".join(audit_lines), language=None)
-        else:
-            st.code("No faceoffs yet.", language=None)
+        lines = [
+            f"{i+1}. {f['time']} | {f['team']} | Event {f['event_id']}"
+            for i, f in enumerate(state["current_list"])
+        ]
+
+        st.code("\n".join(lines) if lines else "No faceoffs yet.")
 
     except Exception as e:
-        st.error(f"Refresh error: {e}")
+        st.error(f"Error: {e}")
+
 else:
-    warning_box("STATUS: OK", "ok")
+    warning_box("STATUS: OK", False)
+    st.info("Load games and click Track Selected Game.")
