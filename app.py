@@ -9,7 +9,6 @@ REFRESH_MS = 3000
 st.set_page_config(page_title="Faceoff Counter", layout="centered")
 
 
-# ------------------ STATE ------------------ #
 def init_state():
     defaults = {
         "games": [],
@@ -26,7 +25,6 @@ def init_state():
             st.session_state[k] = v
 
 
-# ------------------ DATA ------------------ #
 def fetch_json(url):
     r = requests.get(url, timeout=10)
     r.raise_for_status()
@@ -40,62 +38,133 @@ def load_live_games():
     for day in data.get("gamesByDate", []):
         for game in day.get("games", []):
             if game.get("gameState") in {"LIVE", "CRIT"}:
-                away = game["awayTeam"]["abbrev"]
-                home = game["homeTeam"]["abbrev"]
-                gid = game["id"]
+                away = game.get("awayTeam", {}).get("abbrev", "AWAY")
+                home = game.get("homeTeam", {}).get("abbrev", "HOME")
+                gid = game.get("id")
                 label = f"{away} @ {home} ({gid})"
+                games.append({"label": label, "id": gid})
 
-                games.append({
-                    "label": label,
-                    "id": gid
-                })
     return games
 
 
-def parse_faceoffs(plays):
+def parse_clock_to_seconds(clock_str):
+    try:
+        minutes, seconds = clock_str.split(":")
+        return int(minutes) * 60 + int(seconds)
+    except Exception:
+        return None
+
+
+def seconds_to_clock(total_seconds):
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+    return f"{minutes}:{seconds:02d}"
+
+
+def convert_to_time_remaining(clock_str, period):
+    secs_elapsed = parse_clock_to_seconds(clock_str)
+    if secs_elapsed is None:
+        return clock_str
+
+    period_length = 300 if (period is not None and period > 3) else 1200
+    secs_remaining = max(0, period_length - secs_elapsed)
+    return seconds_to_clock(secs_remaining)
+
+
+def build_team_lookup(game_data):
+    lookup = {}
+
+    home = game_data.get("homeTeam", {}) or {}
+    away = game_data.get("awayTeam", {}) or {}
+
+    home_id = home.get("id")
+    away_id = away.get("id")
+
+    home_abbrev = (
+        home.get("abbrev")
+        or home.get("abbrevName")
+        or home.get("triCode")
+        or home.get("placeName", {}).get("default")
+        or "HOME"
+    )
+
+    away_abbrev = (
+        away.get("abbrev")
+        or away.get("abbrevName")
+        or away.get("triCode")
+        or away.get("placeName", {}).get("default")
+        or "AWAY"
+    )
+
+    if home_id is not None:
+        lookup[home_id] = home_abbrev
+    if away_id is not None:
+        lookup[away_id] = away_abbrev
+
+    return lookup
+
+
+def safe_team(play, team_lookup):
+    owner_team_id = play.get("eventOwnerTeamId")
+    if owner_team_id in team_lookup:
+        return team_lookup[owner_team_id]
+
+    team_abbrev = play.get("teamAbbrev")
+    if isinstance(team_abbrev, dict) and team_abbrev.get("default"):
+        return team_abbrev["default"]
+    if isinstance(team_abbrev, str) and team_abbrev:
+        return team_abbrev
+
+    team_obj = play.get("team", {})
+    if isinstance(team_obj, dict) and team_obj.get("abbrev"):
+        return team_obj["abbrev"]
+
+    details = play.get("details", {})
+    if isinstance(details, dict) and details.get("eventOwnerTeamAbbrev"):
+        return details["eventOwnerTeamAbbrev"]
+
+    return "UNK"
+
+
+def parse_faceoffs(game_data):
+    plays = game_data.get("plays", []) or []
+    team_lookup = build_team_lookup(game_data)
+
     faceoffs = []
 
     for play in plays:
         if str(play.get("typeDescKey", "")).lower() == "faceoff":
-            team = (
-                play.get("teamAbbrev", {}).get("default")
-                or play.get("team", {}).get("abbrev")
-                or "UNK"
+            period = play.get("periodDescriptor", {}).get("number")
+            raw_time = play.get("timeInPeriod", "")
+
+            faceoffs.append(
+                {
+                    "event_id": play.get("eventId"),
+                    "period": period,
+                    "raw_time": raw_time,
+                    "time": convert_to_time_remaining(raw_time, period),
+                    "team": safe_team(play, team_lookup),
+                }
             )
 
-            faceoffs.append({
-                "event_id": play.get("eventId"),
-                "period": play.get("periodDescriptor", {}).get("number"),
-                "time": play.get("timeInPeriod"),
-                "team": team
-            })
-
-    # dedupe
-    seen = {}
+    deduped = {}
     for f in faceoffs:
-        seen[f["event_id"]] = f
+        deduped[f["event_id"]] = f
 
-    return list(seen.values())
+    return list(deduped.values())
 
 
 def get_state(game_id):
     data = fetch_json(PBP_URL.format(game_id=game_id))
-    plays = data.get("plays", [])
+    faceoffs = parse_faceoffs(data)
 
-    faceoffs = parse_faceoffs(plays)
-
-    # split by period
     by_period = {}
     for f in faceoffs:
         p = f["period"]
         by_period[p] = by_period.get(p, 0) + 1
 
     current_period = faceoffs[-1]["period"] if faceoffs else 1
-
-    current_period_faceoffs = [
-        f for f in faceoffs if f["period"] == current_period
-    ]
-
+    current_period_faceoffs = [f for f in faceoffs if f["period"] == current_period]
     last_faceoff = faceoffs[-1] if faceoffs else None
 
     return {
@@ -105,11 +174,10 @@ def get_state(game_id):
         "current_list": current_period_faceoffs,
         "current_count": len(current_period_faceoffs),
         "total": len(faceoffs),
-        "last": last_faceoff
+        "last": last_faceoff,
     }
 
 
-# ------------------ UI ------------------ #
 def warning_box(msg, alert):
     if alert:
         st.markdown(
@@ -147,14 +215,12 @@ def warning_box(msg, alert):
         )
 
 
-# ------------------ APP ------------------ #
 init_state()
 
 st.title("NHL Faceoff Counter")
 
 col1, col2 = st.columns(2)
 
-# Load games
 with col1:
     if st.button("Load Live Games", use_container_width=True):
         try:
@@ -171,32 +237,38 @@ with col1:
         except Exception as e:
             st.error(str(e))
 
-# Select game
 labels = [g["label"] for g in st.session_state.games]
+
+selected_index = (
+    labels.index(st.session_state.selected_game_label)
+    if st.session_state.selected_game_label in labels
+    else None
+)
 
 selected = st.selectbox(
     "Games",
     options=labels,
-    index=labels.index(st.session_state.selected_game_label)
-    if st.session_state.selected_game_label in labels else 0
+    index=selected_index,
+    placeholder="Load live games first",
 )
 
 if selected:
     for g in st.session_state.games:
         if g["label"] == selected:
             st.session_state.selected_game_id = g["id"]
+            st.session_state.selected_game_label = g["label"]
 
-# Track
 with col2:
     if st.button("Track Selected Game", use_container_width=True):
-        st.session_state.tracking = True
-        st.session_state.previous_count = None
-        st.session_state.previous_period = None
+        if st.session_state.selected_game_id is None:
+            st.warning("Load live games and select one first.")
+        else:
+            st.session_state.tracking = True
+            st.session_state.previous_count = None
+            st.session_state.previous_period = None
 
 
-# ------------------ LIVE ------------------ #
 if st.session_state.tracking:
-
     st_autorefresh(interval=REFRESH_MS, key="refresh")
 
     try:
@@ -208,7 +280,6 @@ if st.session_state.tracking:
         prev_count = st.session_state.previous_count
         prev_period = st.session_state.previous_period
 
-        # ----- WARNINGS ----- #
         if prev_period == current_period:
             if prev_count is not None:
                 if current_count < prev_count:
@@ -224,7 +295,6 @@ if st.session_state.tracking:
                 msg = "STATUS: OK"
                 alert = False
         else:
-            # new period → reset, no warning
             msg = f"Period {current_period} started"
             alert = False
 
@@ -233,7 +303,6 @@ if st.session_state.tracking:
 
         warning_box(msg, alert)
 
-        # ----- MAIN COUNTER ----- #
         st.markdown(
             f"""
             <div style="font-size:80px; font-weight:800;">
@@ -243,31 +312,28 @@ if st.session_state.tracking:
             unsafe_allow_html=True,
         )
 
-        # ----- SUMMARY ----- #
         by_period = state["by_period"]
 
         st.markdown(
             f"""
             **Current Period:** P{current_period}  
-            **P1:** {by_period.get(1,0)} | **P2:** {by_period.get(2,0)} | **P3:** {by_period.get(3,0)}  
+            **P1:** {by_period.get(1, 0)} | **P2:** {by_period.get(2, 0)} | **P3:** {by_period.get(3, 0)} | **OT:** {sum(v for k, v in by_period.items() if isinstance(k, int) and k > 3)}  
             **Total (game):** {state["total"]}
             """
         )
 
-        # ----- LAST FACEOFF ----- #
         if state["last"]:
             lf = state["last"]
             st.markdown(
                 f"""
-                **Last Faceoff:** P{lf['period']} {lf['time']} | Winner: {lf['team']} | Event {lf['event_id']}
+                **Last Faceoff:** P{lf['period']} {lf['time']} | Winner: {lf['team']}
                 """
             )
 
-        # ----- AUDIT LIST (CURRENT PERIOD ONLY) ----- #
         st.subheader(f"Period {current_period} Faceoffs")
 
         lines = [
-            f"{i+1}. {f['time']} | {f['team']} | Event {f['event_id']}"
+            f"{i + 1}. {f['time']} | Winner: {f['team']}"
             for i, f in enumerate(state["current_list"])
         ]
 
