@@ -59,20 +59,26 @@ def convert_to_time_remaining(clock_str, period, game_data=None):
     if secs_elapsed is None:
         return clock_str
 
+    # Default: standard 20-minute periods
     period_len = 1200
 
     if period is not None and period > 3:
-        game_type = ""
-        if game_data:
-            game_type = str(game_data.get("gameType", ""))
+        game_type = None
+        if game_data is not None:
+            game_type = game_data.get("gameType")
 
-        # NHL convention:
-        # 02 = regular season
-        # 03 = playoffs
-        if game_type == "03":
+        game_type_str = str(game_type).strip() if game_type is not None else ""
+
+        # NHL examples show numeric gameType values like 2 for regular season.
+        # Treat 3 as playoffs.
+        if game_type_str in {"3", "03"}:
             period_len = 1200
-        else:
+        elif game_type_str in {"2", "02"}:
             period_len = 300
+        else:
+            # Fallback:
+            # if OT elapsed time is already above 5:00, this cannot be regular-season OT
+            period_len = 1200 if secs_elapsed > 300 else 300
 
     return seconds_to_clock(max(0, period_len - secs_elapsed))
 
