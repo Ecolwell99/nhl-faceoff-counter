@@ -9,7 +9,6 @@ REFRESH_MS = 3000
 st.set_page_config(page_title="Faceoff Counter", layout="centered")
 
 
-# ---------------- STATE ---------------- #
 def init_state():
     defaults = {
         "games": [],
@@ -25,7 +24,6 @@ def init_state():
             st.session_state[k] = v
 
 
-# ---------------- HELPERS ---------------- #
 def fetch_json(url):
     r = requests.get(url, timeout=10)
     r.raise_for_status()
@@ -65,7 +63,6 @@ def convert_to_time_remaining(clock_str, period):
     return seconds_to_clock(max(0, period_len - secs_elapsed))
 
 
-# ---------------- DATA ---------------- #
 def load_live_games():
     data = fetch_json(SCOREBOARD_URL)
     games = []
@@ -189,7 +186,6 @@ def get_state(game_id):
     }
 
 
-# ---------------- UI ---------------- #
 def warning_box(msg, alert):
     color = "#ffd966" if alert else "#66ff99"
     bg = "#3a1600" if alert else "#132117"
@@ -217,7 +213,7 @@ def render_faceoff_list(faceoffs, sort_desc):
 
     html_lines = "".join([
         f"<div style='padding:6px 0;'>"
-        f"{str(f['num']).rjust(2)}   {f['time']}   {f['team']}"
+        f"<span style='font-weight:600;'>{str(f['num']).rjust(2)}</span>   {f['time']}   {f['team']}"
         f"</div>"
         for f in faceoffs
     ])
@@ -236,7 +232,6 @@ def render_faceoff_list(faceoffs, sort_desc):
     )
 
 
-# ---------------- APP ---------------- #
 init_state()
 
 st.title("NHL Faceoff Counter")
@@ -271,8 +266,6 @@ with col2:
 
 st.toggle("Show newest first", key="sort_desc")
 
-
-# ---------------- LIVE ---------------- #
 if st.session_state.tracking:
     st_autorefresh(interval=REFRESH_MS, key="refresh")
 
