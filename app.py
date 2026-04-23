@@ -123,8 +123,9 @@ def parse_faceoffs(game_data):
     plays = game_data.get("plays", []) or []
 
     team_lookup = build_team_lookup(game_data)
-    home_abbrev = list(team_lookup.values())[0]
-    away_abbrev = list(team_lookup.values())[1]
+    teams = list(team_lookup.values())
+    home_abbrev = teams[0] if len(teams) > 0 else "HOME"
+    away_abbrev = teams[1] if len(teams) > 1 else "AWAY"
 
     faceoffs = []
 
@@ -144,6 +145,7 @@ def parse_faceoffs(game_data):
             }
         )
 
+    # dedupe
     seen = {}
     for f in faceoffs:
         seen[f["event_id"]] = f
@@ -160,7 +162,16 @@ def get_state(game_id):
         by_period[f["period"]] = by_period.get(f["period"], 0) + 1
 
     current_period = faceoffs[-1]["period"] if faceoffs else 1
-    current_list = [f for f in faceoffs if f["period"] == current_period]
+
+    # assign period-based numbering
+    current_list = []
+    count = 0
+    for f in faceoffs:
+        if f["period"] == current_period:
+            count += 1
+            f_copy = dict(f)
+            f_copy["num"] = count
+            current_list.append(f_copy)
 
     return {
         "current_period": current_period,
@@ -229,6 +240,7 @@ with col2:
 
 st.toggle("Show newest first", key="sort_desc")
 
+
 # ---------------- LIVE ---------------- #
 if st.session_state.tracking:
     st_autorefresh(interval=REFRESH_MS, key="refresh")
@@ -279,9 +291,9 @@ if st.session_state.tracking:
     if faceoffs:
         html_lines = "".join([
             f"<div style='padding:6px 0;'>"
-            f"{str(i+1).rjust(2)}   {f['time']}   {f['team']}"
+            f"{str(f['num']).rjust(2)}   {f['time']}   {f['team']}"
             f"</div>"
-            for i, f in enumerate(faceoffs)
+            for f in faceoffs
         ])
 
         st.markdown(
