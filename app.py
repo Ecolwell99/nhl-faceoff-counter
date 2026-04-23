@@ -144,7 +144,6 @@ def parse_faceoffs(game_data):
             }
         )
 
-    # dedupe
     seen = {}
     for f in faceoffs:
         seen[f["event_id"]] = f
@@ -181,13 +180,13 @@ def warning_box(msg, alert):
     st.markdown(
         f"""
         <div style="
-            padding:16px;
-            font-size:26px;
-            font-weight:700;
+            padding:14px;
+            font-size:24px;
+            font-weight:600;
             background:{bg};
             color:{color};
-            border-radius:10px;
-            margin-bottom:16px;">
+            border-radius:8px;
+            margin-bottom:14px;">
             {msg}
         </div>
         """,
@@ -228,10 +227,7 @@ with col2:
         st.session_state.previous_count = None
         st.session_state.previous_period = None
 
-
-# Sort toggle
 st.toggle("Show newest first", key="sort_desc")
-
 
 # ---------------- LIVE ---------------- #
 if st.session_state.tracking:
@@ -247,9 +243,9 @@ if st.session_state.tracking:
 
     if prev_p == period:
         if prev is not None and current < prev:
-            warning_box(f"⚠ COUNT DECREASE: {prev} → {current}", True)
+            warning_box(f"COUNT DECREASE: {prev} → {current}", True)
         elif prev is not None and current - prev > 1:
-            warning_box(f"⚠ MULTIPLE FACEOFFS ADDED: +{current - prev}", True)
+            warning_box(f"MULTIPLE FACEOFFS ADDED: +{current - prev}", True)
         else:
             warning_box("STATUS: OK", False)
     else:
@@ -258,31 +254,50 @@ if st.session_state.tracking:
     st.session_state.previous_count = current
     st.session_state.previous_period = period
 
-    st.markdown(f"<div style='font-size:80px;font-weight:800'>{current}</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div style='font-size:80px; font-weight:700'>{current}</div>",
+        unsafe_allow_html=True,
+    )
 
     bp = state["by_period"]
 
     st.markdown(
-        f"**P1:** {bp.get(1,0)} | **P2:** {bp.get(2,0)} | **P3:** {bp.get(3,0)} | **Total:** {state['total']}"
+        f"P1: {bp.get(1,0)}   P2: {bp.get(2,0)}   P3: {bp.get(3,0)}   Total: {state['total']}"
     )
 
     if state["last"]:
         lf = state["last"]
-        st.markdown(f"**Last Faceoff:** P{lf['period']} {lf['time']}  {lf['team']}")
+        st.markdown(f"P{lf['period']} {lf['time']}   {lf['team']}")
 
-    st.subheader(f"Period {period} Faceoffs")
+    st.markdown("")
 
     faceoffs = state["current_list"]
 
     if st.session_state.sort_desc:
         faceoffs = list(reversed(faceoffs))
 
-    lines = [
-        f"{i+1}. {f['time']}  {f['team']}"
-        for i, f in enumerate(faceoffs)
-    ]
+    if faceoffs:
+        html_lines = "".join([
+            f"<div style='padding:6px 0;'>"
+            f"{str(i+1).rjust(2)}   {f['time']}   {f['team']}"
+            f"</div>"
+            for i, f in enumerate(faceoffs)
+        ])
 
-    st.text("\n".join(lines) if lines else "No faceoffs yet.")
+        st.markdown(
+            f"""
+            <div style="
+                font-family: monospace;
+                font-size:16px;
+                line-height:1.6;
+            ">
+            {html_lines}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("No faceoffs yet.")
 
 else:
     warning_box("STATUS: OK", False)
