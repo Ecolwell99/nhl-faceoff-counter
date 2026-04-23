@@ -145,7 +145,6 @@ def parse_faceoffs(game_data):
             }
         )
 
-    # dedupe
     seen = {}
     for f in faceoffs:
         seen[f["event_id"]] = f
@@ -161,22 +160,31 @@ def get_state(game_id):
     for f in faceoffs:
         by_period[f["period"]] = by_period.get(f["period"], 0) + 1
 
-    current_period = faceoffs[-1]["period"] if faceoffs else 1
-
-    # assign period-based numbering
-    current_list = []
-    count = 0
+    # build per-period lists with numbering
+    period_lists = {}
     for f in faceoffs:
-        if f["period"] == current_period:
+        p = f["period"]
+        if p not in period_lists:
+            period_lists[p] = []
+        period_lists[p].append(f)
+
+    # add numbering
+    for p in period_lists:
+        count = 0
+        new_list = []
+        for f in period_lists[p]:
             count += 1
             f_copy = dict(f)
             f_copy["num"] = count
-            current_list.append(f_copy)
+            new_list.append(f_copy)
+        period_lists[p] = new_list
+
+    current_period = faceoffs[-1]["period"] if faceoffs else 1
 
     return {
+        "period_lists": period_lists,
         "current_period": current_period,
-        "current_list": current_list,
-        "current_count": len(current_list),
+        "current_count": len(period_lists.get(current_period, [])),
         "by_period": by_period,
         "total": len(faceoffs),
         "last": faceoffs[-1] if faceoffs else None,
@@ -199,6 +207,31 @@ def warning_box(msg, alert):
             border-radius:8px;
             margin-bottom:14px;">
             {msg}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_faceoff_list(faceoffs, sort_desc):
+    if sort_desc:
+        faceoffs = list(reversed(faceoffs))
+
+    html_lines = "".join([
+        f"<div style='padding:6px 0;'>"
+        f"{str(f['num']).rjust(2)}   {f['time']}   {f['team']}"
+        f"</div>"
+        for f in faceoffs
+    ])
+
+    st.markdown(
+        f"""
+        <div style="
+            font-family: monospace;
+            font-size:16px;
+            line-height:1.6;
+        ">
+        {html_lines}
         </div>
         """,
         unsafe_allow_html=True,
@@ -283,33 +316,13 @@ if st.session_state.tracking:
 
     st.markdown("")
 
-    faceoffs = state["current_list"]
+    # -------- Tabs -------- #
+    periods = sorted(state["period_lists"].keys())
+    tabs = st.tabs([f"P{p}" for p in periods])
 
-    if st.session_state.sort_desc:
-        faceoffs = list(reversed(faceoffs))
-
-    if faceoffs:
-        html_lines = "".join([
-            f"<div style='padding:6px 0;'>"
-            f"{str(f['num']).rjust(2)}   {f['time']}   {f['team']}"
-            f"</div>"
-            for f in faceoffs
-        ])
-
-        st.markdown(
-            f"""
-            <div style="
-                font-family: monospace;
-                font-size:16px;
-                line-height:1.6;
-            ">
-            {html_lines}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.info("No faceoffs yet.")
+    for i, p in enumerate(periods):
+        with tabs[i]:
+            render_faceoff_list(state["period_lists"][p], st.session_state.sort_desc)
 
 else:
     warning_box("STATUS: OK", False)
