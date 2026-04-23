@@ -46,20 +46,34 @@ def parse_clock_to_seconds(clock_str):
     try:
         m, s = clock_str.split(":")
         return int(m) * 60 + int(s)
-    except:
+    except Exception:
         return None
 
 
 def seconds_to_clock(sec):
-    return f"{sec//60}:{sec%60:02d}"
+    return f"{sec // 60}:{sec % 60:02d}"
 
 
-def convert_to_time_remaining(clock_str, period):
+def convert_to_time_remaining(clock_str, period, game_data=None):
     secs_elapsed = parse_clock_to_seconds(clock_str)
     if secs_elapsed is None:
         return clock_str
 
-    period_len = 300 if (period and period > 3) else 1200
+    period_len = 1200
+
+    if period is not None and period > 3:
+        game_type = ""
+        if game_data:
+            game_type = str(game_data.get("gameType", ""))
+
+        # NHL convention:
+        # 02 = regular season
+        # 03 = playoffs
+        if game_type == "03":
+            period_len = 1200
+        else:
+            period_len = 300
+
     return seconds_to_clock(max(0, period_len - secs_elapsed))
 
 
@@ -137,7 +151,7 @@ def parse_faceoffs(game_data):
             {
                 "event_id": play.get("eventId"),
                 "period": period,
-                "time": convert_to_time_remaining(raw_time, period),
+                "time": convert_to_time_remaining(raw_time, period, game_data),
                 "team": resolve_team(play, team_lookup, home_abbrev, away_abbrev),
             }
         )
@@ -267,9 +281,8 @@ with col2:
 st.toggle("Show newest first", key="sort_desc")
 
 if st.session_state.tracking:
-    st_autorefresh(interval=REFRESH_MS, key="refresh")
-
     state = get_state(st.session_state.selected_game_id)
+    st_autorefresh(interval=REFRESH_MS, key="refresh")
 
     current = state["current_count"]
     period = state["current_period"]
