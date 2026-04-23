@@ -160,7 +160,6 @@ def get_state(game_id):
     for f in faceoffs:
         by_period[f["period"]] = by_period.get(f["period"], 0) + 1
 
-    # build per-period lists with numbering
     period_lists = {}
     for f in faceoffs:
         p = f["period"]
@@ -168,7 +167,6 @@ def get_state(game_id):
             period_lists[p] = []
         period_lists[p].append(f)
 
-    # add numbering
     for p in period_lists:
         count = 0
         new_list = []
@@ -312,11 +310,15 @@ if st.session_state.tracking:
 
     if state["last"]:
         lf = state["last"]
-        st.markdown(f"P{lf['period']} {lf['time']}   {lf['team']}")
+        st.markdown(
+            f"<div style='font-size:15px; opacity:0.8;'>"
+            f"Last Faceoff — P{lf['period']} {lf['time']}   {lf['team']}"
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
     st.markdown("")
 
-    # -------- Tabs -------- #
     periods = sorted(state["period_lists"].keys())
     tabs = st.tabs([f"P{p}" for p in periods])
 
